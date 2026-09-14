@@ -30,6 +30,7 @@ EVENT_NAMES = {
     1 << 14: "Trigeminy candidate",
     1 << 15: "P wave",
     1 << 16: "T wave",
+    1 << 17: "Invalid input",
 }
 
 RHYTHM_NAMES = (
@@ -57,6 +58,7 @@ class _Output(ctypes.Structure):
         ("t_peak_sample_index", ctypes.c_uint64),
         ("p_peak_uv", ctypes.c_float),
         ("t_peak_uv", ctypes.c_float),
+        ("status", ctypes.c_uint32),
     ]
 
 
@@ -97,16 +99,23 @@ class CDetector:
     def __init__(self, sample_rate_hz: int, mains_hz: int = 50):
         self.sample_rate_hz = sample_rate_hz
         self.library = ctypes.CDLL(str(build_library()))
+        self.library.ecg_detector_ffi_api_version.restype = ctypes.c_uint32
+        self.library.ecg_detector_ffi_output_size.restype = ctypes.c_size_t
+        if self.library.ecg_detector_ffi_api_version() != 2:
+            raise RuntimeError("Incompatible ECG detector library API version")
+        if self.library.ecg_detector_ffi_output_size() != ctypes.sizeof(_Output):
+            raise RuntimeError("Incompatible ECG detector output structure")
         self.library.ecg_detector_ffi_state_size.restype = ctypes.c_size_t
         self.library.ecg_detector_ffi_state_alignment.restype = ctypes.c_size_t
         self.library.ecg_detector_ffi_init.argtypes = [ctypes.c_void_p,
                                                        ctypes.c_uint16,
                                                        ctypes.c_uint8]
         self.library.ecg_detector_ffi_init.restype = ctypes.c_int
-        self.library.ecg_detector_ffi_process_buffer.argtypes = [
+        self.library.ecg_detector_ffi_process_buffer_checked.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
             ctypes.c_uint32, ctypes.POINTER(_Output)
         ]
+        self.library.ecg_detector_ffi_process_buffer_checked.restype = ctypes.c_int
         size = self.library.ecg_detector_ffi_state_size()
         alignment = self.library.ecg_detector_ffi_state_alignment()
         self._storage = ctypes.create_string_buffer(size + alignment - 1)
@@ -118,13 +127,20 @@ class CDetector:
 
     def process(self, samples_uv: np.ndarray, chunk_size: int = 50_000) -> list[DetectionEvent]:
         values = np.ascontiguousarray(samples_uv, dtype=np.float32)
+        if values.ndim != 1:
+            raise ValueError("CDetector.process expects one ECG lead")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("ECG samples must all be finite")
         events: list[DetectionEvent] = []
         for offset in range(0, len(values), chunk_size):
             chunk = values[offset:offset + chunk_size]
             outputs = (_Output * len(chunk))()
             pointer = chunk.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            self.library.ecg_detector_ffi_process_buffer(
-                self.state, pointer, len(chunk), 0, outputs)
+            if not self.library.ecg_detector_ffi_process_buffer_checked(
+                    self.state, pointer, len(chunk), 0, outputs):
+                raise RuntimeError("C detector rejected an ECG input sample")
             for index, result in enumerate(outputs):
                 bits = int(result.new_events)
                 for bit, name in EVENT_NAMES.items():

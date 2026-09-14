@@ -9,6 +9,15 @@ from ecg_viewer.detector import CDetector
 
 
 class CDetectorBridgeTests(unittest.TestCase):
+    def test_rejects_nonfinite_and_malformed_input(self) -> None:
+        detector = CDetector(250, mains_hz=0)
+        with self.assertRaises(ValueError):
+            detector.process(np.array([0.0, np.nan], dtype=np.float32))
+        with self.assertRaises(ValueError):
+            detector.process(np.zeros((4, 2), dtype=np.float32))
+        with self.assertRaises(ValueError):
+            detector.process(np.zeros(4, dtype=np.float32), chunk_size=0)
+
     def test_regular_waveform_produces_qrs_events(self) -> None:
         sample_rate = 250
         samples = np.zeros(12 * sample_rate, dtype=np.float32)

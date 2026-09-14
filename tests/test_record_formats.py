@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ecg_viewer.record import load_record
+from ecg_viewer.record import _make_record, _scale_to_uv, load_record
 
 
 class RecordFormatTests(unittest.TestCase):
@@ -50,6 +50,33 @@ class RecordFormatTests(unittest.TestCase):
         self.assertEqual(record.sample_rate_hz, self.sample_rate)
         self.assertEqual(record.signals_uv.shape, (2500, 2))
         self.assertGreater(np.max(record.signals_uv[:, 0]), 990.0)
+
+    def test_missing_record_and_invalid_values_are_rejected(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            load_record(self.directory / "missing.hea")
+        with self.assertRaises(ValueError):
+            _scale_to_uv(np.array([0.0, np.nan]), "mV")
+        with self.assertRaises(ValueError):
+            _scale_to_uv(np.array([0.0, np.inf]), "uV")
+        with self.assertRaises(ValueError):
+            _scale_to_uv(np.array([0.0]), "unknown")
+
+    def test_wfdb_base_name_is_supported(self) -> None:
+        import wfdb
+
+        wfdb.wrsamp(
+            "base", fs=self.sample_rate, units=["mV", "mV"],
+            sig_name=["I", "II"], p_signal=self.signals_mv,
+            write_dir=str(self.directory), fmt=["16", "16"])
+        record = load_record(self.directory / "base")
+        self.assertEqual(record.signals_uv.shape, (2500, 2))
+
+    def test_duplicate_channel_names_are_disambiguated(self) -> None:
+        columns = [np.zeros(10, dtype=np.float32),
+                   np.ones(10, dtype=np.float32)]
+        record = _make_record(columns, 250.0, ("ECG", "ECG"),
+                              self.directory / "duplicate.hea")
+        self.assertEqual(record.lead_names, ("ECG", "ECG [2]"))
 
 
 if __name__ == "__main__":

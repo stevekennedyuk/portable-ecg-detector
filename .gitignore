@@ -1,5 +1,6 @@
 test_ecg_detector
 test_ecg_detector_san
+test_ecg_detector_strict
 *.dSYM/
 *.o
 build/

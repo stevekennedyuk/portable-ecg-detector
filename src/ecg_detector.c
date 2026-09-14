@@ -4,6 +4,7 @@
 #include <string.h>
 
 #define ECG_PI 3.14159265358979323846f
+#define ECG_INITIALIZATION_COOKIE UINT32_C(0x45434732)
 
 static float clampf(float value, float low, float high)
 {
@@ -68,10 +69,29 @@ static bool config_valid(const ecg_detector_config_t *config)
         config->sample_rate_hz > ECG_DETECTOR_MAX_SAMPLE_RATE_HZ) return false;
     if (config->mains_hz != 0u && config->mains_hz != 50u &&
         config->mains_hz != 60u) return false;
+    if (!isfinite(config->highpass_hz) || !isfinite(config->lowpass_hz) ||
+        !isfinite(config->notch_q) ||
+        !isfinite(config->min_signal_range_uv) ||
+        !isfinite(config->max_sample_slew_uv) ||
+        !isfinite(config->adc_clip_uv) || !isfinite(config->vf_min_rms_uv) ||
+        !isfinite(config->p_wave_min_uv) ||
+        !isfinite(config->t_wave_min_uv)) return false;
     if (config->highpass_hz <= 0.0f || config->lowpass_hz <= 0.0f ||
+        config->highpass_hz >= config->lowpass_hz ||
         config->lowpass_hz >= 0.45f * (float)config->sample_rate_hz) return false;
     if (config->notch_q <= 0.0f || config->qrs_refractory_ms < 150u ||
         config->asystole_ms < 1000u) return false;
+    if (config->mains_hz != 0u &&
+        (uint32_t)config->mains_hz * 2u >=
+        (uint32_t)config->sample_rate_hz)
+        return false;
+    if (config->brady_bpm < 20u || config->brady_bpm >= config->tachy_bpm ||
+        config->tachy_bpm >= config->vt_bpm || config->vt_bpm > 300u)
+        return false;
+    if (config->min_signal_range_uv <= 0.0f ||
+        config->max_sample_slew_uv <= 0.0f || config->adc_clip_uv <= 0.0f ||
+        config->vf_min_rms_uv <= 0.0f || config->p_wave_min_uv <= 0.0f ||
+        config->t_wave_min_uv <= 0.0f) return false;
     return true;
 }
 
@@ -83,6 +103,7 @@ bool ecg_detector_init(ecg_detector_t *detector,
     if (detector == NULL || !config_valid(config)) return false;
 
     memset(detector, 0, sizeof(*detector));
+    detector->initialization_cookie = ECG_INITIALIZATION_COOKIE;
     detector->config = *config;
     dt = 1.0f / (float)config->sample_rate_hz;
     rc = 1.0f / (2.0f * ECG_PI * config->highpass_hz);
@@ -112,7 +133,8 @@ bool ecg_detector_init(ecg_detector_t *detector,
 void ecg_detector_reset(ecg_detector_t *detector)
 {
     ecg_detector_config_t config;
-    if (detector == NULL) return;
+    if (detector == NULL ||
+        detector->initialization_cookie != ECG_INITIALIZATION_COOKIE) return;
     config = detector->config;
     (void)ecg_detector_init(detector, &config);
 }
@@ -667,9 +689,34 @@ static ecg_rhythm_t select_rhythm(const ecg_detector_t *d, uint32_t events)
     return ECG_RHYTHM_UNKNOWN;
 }
 
-void ecg_detector_process(ecg_detector_t *d, float sample_uv,
-                          uint32_t input_flags,
-                          ecg_detector_output_t *output)
+static ecg_detector_status_t fail_closed_sample(ecg_detector_t *d,
+                                                 uint32_t input_flags,
+                                                 ecg_detector_status_t status,
+                                                 ecg_detector_output_t *output)
+{
+    const ecg_detector_config_t config = d->config;
+    const uint64_t next_sample = d->sample_index == UINT64_MAX ?
+                                 UINT64_MAX : d->sample_index + UINT64_C(1);
+    (void)ecg_detector_init(d, &config);
+    d->sample_index = next_sample;
+    memset(output, 0, sizeof(*output));
+    output->sample_index = next_sample;
+    output->signal_quality = 0u;
+    output->rhythm = ECG_RHYTHM_UNANALYSABLE;
+    output->active_events = ECG_EVENT_SIGNAL_POOR;
+    output->new_events = ECG_EVENT_SIGNAL_POOR;
+    if (status == ECG_STATUS_INVALID_SAMPLE) {
+        output->active_events |= ECG_EVENT_INPUT_INVALID;
+        output->new_events |= ECG_EVENT_INPUT_INVALID;
+    }
+    output->input_flags = input_flags;
+    output->status = status;
+    return status;
+}
+
+ecg_detector_status_t ecg_detector_process_checked(
+    ecg_detector_t *d, float sample_uv, uint32_t input_flags,
+    ecg_detector_output_t *output)
 {
     float filtered;
     bool qrs;
@@ -677,8 +724,34 @@ void ecg_detector_process(ecg_detector_t *d, float sample_uv,
     uint32_t beat_events = 0u;
     uint32_t wave_events = 0u;
     uint64_t qrs_peak_sample = 0u;
-    if (d == NULL || output == NULL) return;
+    if (output == NULL) return ECG_STATUS_INVALID_ARGUMENT;
     memset(output, 0, sizeof(*output));
+    if (d == NULL) {
+        output->status = ECG_STATUS_INVALID_ARGUMENT;
+        return output->status;
+    }
+    if (d->initialization_cookie != ECG_INITIALIZATION_COOKIE) {
+        output->status = ECG_STATUS_NOT_INITIALIZED;
+        return output->status;
+    }
+    if (d->sample_index == UINT64_MAX) {
+        output->sample_index = UINT64_MAX;
+        output->signal_quality = 0u;
+        output->rhythm = ECG_RHYTHM_UNANALYSABLE;
+        output->active_events = ECG_EVENT_SIGNAL_POOR |
+                                ECG_EVENT_INPUT_INVALID;
+        output->new_events = output->active_events;
+        output->status = ECG_STATUS_TIMEBASE_EXHAUSTED;
+        return output->status;
+    }
+    if (!isfinite(sample_uv) ||
+        (input_flags & ~(uint32_t)ECG_DETECTOR_INPUT_FLAG_MASK) != 0u)
+        return fail_closed_sample(d, input_flags, ECG_STATUS_INVALID_SAMPLE,
+                                  output);
+    if ((input_flags & ECG_DETECTOR_INPUT_FLAG_MASK) != 0u ||
+        fabsf(sample_uv) >= d->config.adc_clip_uv)
+        return fail_closed_sample(d, input_flags,
+                                  ECG_STATUS_SIGNAL_UNAVAILABLE, output);
 
     d->input_flags = input_flags;
     filtered = filter_sample(d, sample_uv);
@@ -717,7 +790,16 @@ void ecg_detector_process(ecg_detector_t *d, float sample_uv,
     if (qrs) output->new_events |= ECG_EVENT_QRS;
     output->rhythm = select_rhythm(d, events);
     output->input_flags = input_flags;
+    output->status = ECG_STATUS_OK;
     d->previous_active_events = events;
+    return ECG_STATUS_OK;
+}
+
+void ecg_detector_process(ecg_detector_t *d, float sample_uv,
+                          uint32_t input_flags,
+                          ecg_detector_output_t *output)
+{
+    (void)ecg_detector_process_checked(d, sample_uv, input_flags, output);
 }
 
 const char *ecg_detector_rhythm_name(ecg_rhythm_t rhythm)

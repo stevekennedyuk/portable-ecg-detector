@@ -14,6 +14,7 @@ extern "C" {
 #define ECG_DETECTOR_MAX_MWI_SAMPLES 200u
 #define ECG_DETECTOR_MAX_VF_SAMPLES (4u * ECG_DETECTOR_MAX_SAMPLE_RATE_HZ)
 #define ECG_DETECTOR_MAX_HISTORY_SAMPLES 1200u
+#define ECG_DETECTOR_API_VERSION 2u
 
 typedef enum {
     ECG_RHYTHM_WARMUP = 0,
@@ -38,6 +39,16 @@ typedef enum {
     ECG_BEAT_UNCLASSIFIED
 } ecg_beat_type_t;
 
+typedef enum {
+    ECG_STATUS_OK = 0,
+    ECG_STATUS_INVALID_ARGUMENT,
+    ECG_STATUS_INVALID_CONFIGURATION,
+    ECG_STATUS_NOT_INITIALIZED,
+    ECG_STATUS_INVALID_SAMPLE,
+    ECG_STATUS_SIGNAL_UNAVAILABLE,
+    ECG_STATUS_TIMEBASE_EXHAUSTED
+} ecg_detector_status_t;
+
 enum {
     ECG_EVENT_QRS                 = 1u << 0,
     ECG_EVENT_SIGNAL_POOR         = 1u << 1,
@@ -55,7 +66,8 @@ enum {
     ECG_EVENT_BIGEMINY_CANDIDATE  = 1u << 13,
     ECG_EVENT_TRIGEMINY_CANDIDATE = 1u << 14,
     ECG_EVENT_P_WAVE              = 1u << 15,
-    ECG_EVENT_T_WAVE              = 1u << 16
+    ECG_EVENT_T_WAVE              = 1u << 16,
+    ECG_EVENT_INPUT_INVALID       = 1u << 17
 };
 
 enum {
@@ -63,6 +75,9 @@ enum {
     ECG_INPUT_ADC_CLIPPED = 1u << 1,
     ECG_INPUT_PACER_SEEN  = 1u << 2
 };
+
+#define ECG_DETECTOR_INPUT_FLAG_MASK \
+    (ECG_INPUT_LEAD_OFF | ECG_INPUT_ADC_CLIPPED | ECG_INPUT_PACER_SEEN)
 
 typedef struct {
     uint16_t sample_rate_hz;
@@ -100,6 +115,7 @@ typedef struct {
     uint32_t active_events;
     uint32_t new_events;
     uint32_t input_flags;
+    ecg_detector_status_t status;
 } ecg_detector_output_t;
 
 typedef struct {
@@ -108,6 +124,7 @@ typedef struct {
 } ecg_biquad_t;
 
 typedef struct {
+    uint32_t initialization_cookie;
     ecg_detector_config_t config;
     uint64_t sample_index;
 
@@ -199,6 +216,15 @@ void ecg_detector_process(ecg_detector_t *detector,
                           float sample_uv,
                           uint32_t input_flags,
                           ecg_detector_output_t *output);
+
+/*
+ * Status-returning form for safety-related integrations. Invalid/non-finite
+ * input fails closed, clears accumulated analysis state, advances time by one
+ * sample, and requires a fresh warm-up before rhythm output resumes.
+ */
+ecg_detector_status_t ecg_detector_process_checked(
+    ecg_detector_t *detector, float sample_uv, uint32_t input_flags,
+    ecg_detector_output_t *output);
 
 const char *ecg_detector_rhythm_name(ecg_rhythm_t rhythm);
 

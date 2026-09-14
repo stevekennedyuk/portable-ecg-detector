@@ -1,5 +1,5 @@
-numpy>=2.0
-pyedflib>=0.1.40
-pyqtgraph>=0.13.7
-PySide6>=6.8
-wfdb>=4.2
+numpy==2.5.3
+pyedflib==0.1.42
+pyqtgraph==0.14.0
+PySide6==6.11.2
+wfdb==4.3.1

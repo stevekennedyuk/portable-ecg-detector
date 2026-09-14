@@ -10,6 +10,13 @@ ports. It is **not a clinically validated algorithm and must not be used to
 diagnose, treat, or provide a safety-critical alarm without a complete medical
 device development and validation process**.
 
+The code now contains defensive controls expected in a safety-oriented
+baseline: checked processing status, rejection of non-finite samples and
+invalid configuration, fail-closed handling of lead-off/clipping/pacer flags,
+an FFI ABI handshake, strict compiler diagnostics, sanitizer tests, and
+continuous integration. These controls improve robustness; they do not
+constitute regulatory clearance or clinical validation.
+
 ## Included
 
 - 0.5 Hz high-pass and configurable 50/60 Hz notch filtering
@@ -35,9 +42,16 @@ building the data and validation interfaces, not a medical alarm detector.
 
 ```sh
 make test
+make strict
+make sanitize
 ```
 
 The test uses only the standard C library and `libm`.
+
+See [Clinical readiness](docs/CLINICAL_READINESS.md),
+[software requirements](docs/SOFTWARE_REQUIREMENTS.md), and the
+[preliminary risk register](docs/RISK_REGISTER.md) for the controlled work
+still required before patient use.
 
 ## macOS ECG viewer
 
@@ -105,7 +119,13 @@ void on_afe_sample(int32_t sample_uv, bool lead_off)
 {
     ecg_detector_output_t result;
     uint32_t flags = lead_off ? ECG_INPUT_LEAD_OFF : 0u;
-    ecg_detector_process(&detector, (float)sample_uv, flags, &result);
+    ecg_detector_status_t status = ecg_detector_process_checked(
+        &detector, (float)sample_uv, flags, &result);
+
+    if (status != ECG_STATUS_OK) {
+        /* Annunciate signal unavailable; never reuse a previous diagnosis. */
+        return;
+    }
 
     if ((result.new_events & ECG_EVENT_QRS) != 0u) {
         /* update beat indicator */
@@ -131,6 +151,8 @@ microvolts after applying the AFE gain and ADC scale.
   filter and statistics internals with Q31/CMSIS-DSP implementations.
 - The input status flags should come directly from the AFE driver. Do not infer
   lead-off solely from the ECG waveform.
+- A pacer indication deliberately makes analysis unavailable. Pacer-pulse
+  blanking and paced-rhythm validation are not implemented.
 - Rendering, file I/O, networking and alarm sounds belong outside this library.
 
 ## Required validation work

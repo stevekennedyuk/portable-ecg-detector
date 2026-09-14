@@ -33,6 +33,69 @@ static void test_invalid_config(void)
     ecg_detector_config_t config;
     ecg_detector_default_config(&config, 100u);
     assert(!ecg_detector_init(&detector, &config));
+    ecg_detector_default_config(&config, 250u);
+    config.lowpass_hz = NAN;
+    assert(!ecg_detector_init(&detector, &config));
+    ecg_detector_default_config(&config, 250u);
+    config.highpass_hz = config.lowpass_hz;
+    assert(!ecg_detector_init(&detector, &config));
+    ecg_detector_default_config(&config, 250u);
+    config.brady_bpm = config.tachy_bpm;
+    assert(!ecg_detector_init(&detector, &config));
+    ecg_detector_default_config(&config, 128u);
+    config.mains_hz = 60u;
+    assert(ecg_detector_init(&detector, &config));
+}
+
+static void test_fail_closed_inputs(void)
+{
+    ecg_detector_t detector;
+    ecg_detector_t uninitialized = {0};
+    ecg_detector_config_t config;
+    ecg_detector_output_t output;
+    uint64_t previous_index;
+    uint32_t i;
+
+    assert(ecg_detector_process_checked(NULL, 0.0f, 0u, &output) ==
+           ECG_STATUS_INVALID_ARGUMENT);
+    assert(ecg_detector_process_checked(&uninitialized, 0.0f, 0u, &output) ==
+           ECG_STATUS_NOT_INITIALIZED);
+
+    ecg_detector_default_config(&config, 250u);
+    config.mains_hz = 0u;
+    assert(ecg_detector_init(&detector, &config));
+    for (i = 0u; i < 750u; ++i)
+        assert(ecg_detector_process_checked(&detector, 100.0f, 0u, &output) ==
+               ECG_STATUS_OK);
+    previous_index = output.sample_index;
+
+    assert(ecg_detector_process_checked(&detector, NAN, 0u, &output) ==
+           ECG_STATUS_INVALID_SAMPLE);
+    assert(output.sample_index == previous_index + 1u);
+    assert(output.rhythm == ECG_RHYTHM_UNANALYSABLE);
+    assert((output.new_events & ECG_EVENT_INPUT_INVALID) != 0u);
+    assert((output.new_events & ECG_EVENT_QRS) == 0u);
+
+    assert(ecg_detector_process_checked(&detector, 0.0f, 0x80000000u,
+                                        &output) ==
+           ECG_STATUS_INVALID_SAMPLE);
+    assert(ecg_detector_process_checked(&detector, 0.0f,
+                                        ECG_INPUT_LEAD_OFF, &output) ==
+           ECG_STATUS_SIGNAL_UNAVAILABLE);
+    assert(output.signal_quality == 0u);
+    assert((output.active_events & ECG_EVENT_SIGNAL_POOR) != 0u);
+    assert((output.active_events & ~(uint32_t)ECG_EVENT_SIGNAL_POOR) == 0u);
+
+    assert(ecg_detector_process_checked(&detector, config.adc_clip_uv,
+                                        0u, &output) ==
+           ECG_STATUS_SIGNAL_UNAVAILABLE);
+    assert(isfinite(output.filtered_uv));
+
+    detector.sample_index = UINT64_MAX;
+    assert(ecg_detector_process_checked(&detector, 0.0f, 0u, &output) ==
+           ECG_STATUS_TIMEBASE_EXHAUSTED);
+    assert(output.sample_index == UINT64_MAX);
+    assert(output.rhythm == ECG_RHYTHM_UNANALYSABLE);
 }
 
 static void test_regular_and_asystole(void)
@@ -173,14 +236,67 @@ static void test_vf_candidate(void)
     assert(seen);
 }
 
+static void test_deterministic_stress_invariants(void)
+{
+    static const uint16_t rates[] = {125u, 250u, 360u, 500u, 1000u};
+    uint32_t random_state = UINT32_C(0x6d2b79f5);
+    size_t rate_index;
+
+    for (rate_index = 0u; rate_index < sizeof(rates) / sizeof(rates[0]);
+         ++rate_index) {
+        ecg_detector_t detector;
+        ecg_detector_config_t config;
+        ecg_detector_output_t output;
+        uint64_t expected_sample = 0u;
+        uint32_t i;
+
+        ecg_detector_default_config(&config, rates[rate_index]);
+        assert(ecg_detector_init(&detector, &config));
+        for (i = 0u; i < 50000u; ++i) {
+            float sample;
+            uint32_t flags = 0u;
+            ecg_detector_status_t status;
+
+            random_state = random_state * UINT32_C(1664525) +
+                           UINT32_C(1013904223);
+            sample = ((float)(random_state & UINT32_C(0xffff)) - 32768.0f) *
+                     (3000.0f / 32768.0f);
+            if (i % 9973u == 0u) flags = ECG_INPUT_LEAD_OFF;
+            if (i % 12007u == 0u) flags = ECG_INPUT_ADC_CLIPPED;
+            if (i % 15013u == 0u) sample = INFINITY;
+
+            status = ecg_detector_process_checked(&detector, sample, flags,
+                                                   &output);
+            expected_sample++;
+            assert(output.sample_index == expected_sample);
+            assert(isfinite(output.filtered_uv));
+            assert(isfinite(output.heart_rate_bpm));
+            assert(isfinite(output.p_peak_uv));
+            assert(isfinite(output.t_peak_uv));
+            assert(output.signal_quality <= 100u);
+            assert(output.qrs_peak_sample_index <= output.sample_index);
+            assert(output.p_peak_sample_index <= output.sample_index);
+            assert(output.t_peak_sample_index <= output.sample_index);
+            if (status != ECG_STATUS_OK) {
+                const uint32_t permitted = ECG_EVENT_SIGNAL_POOR |
+                                           ECG_EVENT_INPUT_INVALID;
+                assert((output.active_events & ~permitted) == 0u);
+                assert(output.rhythm == ECG_RHYTHM_UNANALYSABLE);
+            }
+        }
+    }
+}
+
 int main(void)
 {
     test_invalid_config();
+    test_fail_closed_inputs();
     test_regular_and_asystole();
     test_lead_off_suppresses_rhythm();
     test_rapid_regular_candidate();
     test_af_candidate();
     test_vf_candidate();
+    test_deterministic_stress_invariants();
     puts("all tests passed");
     return 0;
 }
