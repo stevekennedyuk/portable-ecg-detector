@@ -49,6 +49,11 @@ void ecg_detector_ffi_process(void *state, float sample_uv,
     output->beat_type = (uint8_t)result.beat_type;
     output->active_events = result.active_events;
     output->new_events = result.new_events;
+    output->qrs_peak_sample_index = result.qrs_peak_sample_index;
+    output->p_peak_sample_index = result.p_peak_sample_index;
+    output->t_peak_sample_index = result.t_peak_sample_index;
+    output->p_peak_uv = result.p_peak_uv;
+    output->t_peak_uv = result.t_peak_uv;
 }
 
 void ecg_detector_ffi_process_buffer(void *state, const float *samples_uv,

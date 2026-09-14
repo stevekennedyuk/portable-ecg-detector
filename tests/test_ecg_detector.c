@@ -15,10 +15,16 @@ static float synthetic_ecg(uint64_t sample, uint16_t fs, float bpm)
     const float distance = fabsf(phase - qrs_center);
     const float baseline = 35.0f * sinf(2.0f * TEST_PI * 0.25f *
                                        (float)sample / (float)fs);
+    const float p_distance = (phase - 0.08f * (float)fs) /
+                             (0.025f * (float)fs);
+    const float t_distance = (phase - 0.48f * (float)fs) /
+                             (0.060f * (float)fs);
+    const float p_wave = 100.0f * expf(-0.5f * p_distance * p_distance);
+    const float t_wave = 240.0f * expf(-0.5f * t_distance * t_distance);
     float qrs = 0.0f;
     if (distance < qrs_width)
         qrs = 1100.0f * (1.0f - distance / qrs_width);
-    return baseline + qrs;
+    return baseline + p_wave + qrs + t_wave;
 }
 
 static void test_invalid_config(void)
@@ -37,6 +43,8 @@ static void test_regular_and_asystole(void)
     const uint16_t fs = 250u;
     uint64_t i;
     unsigned qrs_count = 0u;
+    unsigned p_count = 0u;
+    unsigned t_count = 0u;
 
     ecg_detector_default_config(&config, fs);
     config.mains_hz = 0u;
@@ -46,8 +54,18 @@ static void test_regular_and_asystole(void)
         ecg_detector_process(&detector, synthetic_ecg(i, fs, 60.0f), 0u,
                              &output);
         if ((output.new_events & ECG_EVENT_QRS) != 0u) qrs_count++;
+        if ((output.new_events & ECG_EVENT_P_WAVE) != 0u) {
+            assert(output.p_peak_sample_index < output.sample_index);
+            p_count++;
+        }
+        if ((output.new_events & ECG_EVENT_T_WAVE) != 0u) {
+            assert(output.t_peak_sample_index < output.sample_index);
+            t_count++;
+        }
     }
     assert(qrs_count >= 8u && qrs_count <= 12u);
+    assert(p_count >= 7u);
+    assert(t_count >= 7u);
     assert(output.heart_rate_bpm > 55.0f && output.heart_rate_bpm < 65.0f);
     assert(output.rhythm == ECG_RHYTHM_REGULAR);
 

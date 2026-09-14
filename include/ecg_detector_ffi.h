@@ -20,6 +20,11 @@ typedef struct {
     uint8_t reserved;
     uint32_t active_events;
     uint32_t new_events;
+    uint64_t qrs_peak_sample_index;
+    uint64_t p_peak_sample_index;
+    uint64_t t_peak_sample_index;
+    float p_peak_uv;
+    float t_peak_uv;
 } ecg_detector_ffi_output_t;
 
 size_t ecg_detector_ffi_state_size(void);

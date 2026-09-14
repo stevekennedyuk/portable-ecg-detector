@@ -28,6 +28,8 @@ EVENT_NAMES = {
     1 << 12: "Ventricular couplet",
     1 << 13: "Bigeminy candidate",
     1 << 14: "Trigeminy candidate",
+    1 << 15: "P wave",
+    1 << 16: "T wave",
 }
 
 RHYTHM_NAMES = (
@@ -50,6 +52,11 @@ class _Output(ctypes.Structure):
         ("reserved", ctypes.c_uint8),
         ("active_events", ctypes.c_uint32),
         ("new_events", ctypes.c_uint32),
+        ("qrs_peak_sample_index", ctypes.c_uint64),
+        ("p_peak_sample_index", ctypes.c_uint64),
+        ("t_peak_sample_index", ctypes.c_uint64),
+        ("p_peak_uv", ctypes.c_float),
+        ("t_peak_uv", ctypes.c_float),
     ]
 
 
@@ -62,6 +69,7 @@ class DetectionEvent:
     qrs_width_ms: int
     signal_quality: int
     rhythm: str
+    amplitude_uv: float
 
 
 def _library_path() -> Path:
@@ -122,14 +130,17 @@ class CDetector:
                 for bit, name in EVENT_NAMES.items():
                     if bits & bit:
                         event_sample = offset + index
+                        amplitude_uv = float(values[event_sample])
                         if bit in {1 << 0, 1 << 10, 1 << 11, 1 << 12,
-                                   1 << 13, 1 << 14}:
-                            search_start = max(
-                                0, event_sample - self.sample_rate_hz // 4)
-                            search = values[search_start:event_sample + 1]
-                            if len(search):
-                                event_sample = search_start + int(
-                                    np.argmax(np.abs(search)))
+                                   1 << 13, 1 << 14} and result.qrs_peak_sample_index:
+                            event_sample = int(result.qrs_peak_sample_index)
+                            amplitude_uv = float(values[event_sample])
+                        elif bit == 1 << 15:
+                            event_sample = int(result.p_peak_sample_index)
+                            amplitude_uv = float(result.p_peak_uv)
+                        elif bit == 1 << 16:
+                            event_sample = int(result.t_peak_sample_index)
+                            amplitude_uv = float(result.t_peak_uv)
                         rhythm_index = int(result.rhythm)
                         rhythm = (RHYTHM_NAMES[rhythm_index]
                                   if rhythm_index < len(RHYTHM_NAMES) else "Invalid")
@@ -141,6 +152,7 @@ class CDetector:
                             qrs_width_ms=int(result.qrs_width_ms),
                             signal_quality=int(result.signal_quality),
                             rhythm=rhythm,
+                            amplitude_uv=amplitude_uv,
                         ))
         return events
 

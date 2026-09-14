@@ -15,6 +15,7 @@ device development and validation process**.
 - 0.5 Hz high-pass and configurable 50/60 Hz notch filtering
 - low-pass filtering for the QRS/detection path
 - adaptive streaming QRS detection
+- signal-derived P- and T-wave peak delineation with sample index and amplitude
 - heart rate and RR interval tracking
 - input lead-off, clipping, slew and flat-signal quality checks
 - bradycardia, tachycardia, pause and asystole candidate states
@@ -44,6 +45,8 @@ The Python viewer reads standard PhysioNet/WFDB (`.hea` plus signal files) and
 EDF/EDF+ recordings. It displays all leads in synchronized 5, 10, 20 or
 30-second windows and overlays the events produced by this C detector. QRS
 locations are shown as dots; arrhythmia onsets are labelled vertical markers.
+Detected P and T peaks are placed on the sampled waveform as green `P` and blue
+`T` landmarks. They are not generated from nominal beat timing.
 
 On macOS:
 
@@ -119,8 +122,8 @@ microvolts after applying the AFE gain and ADC scale.
 
 ## Porting notes
 
-- RAM use is fixed and dominated by the four-second VF buffer: approximately
-  18 KiB with the default compile-time limits.
+- RAM use is fixed and dominated by the four-second VF buffer and waveform
+  history: approximately 22 KiB with the default compile-time limits.
 - Stack use per call is small. The detector object should normally be static.
 - `sinf`, `cosf`, `sqrtf`, `fabsf` and `fmodf` are used; `fmodf` is only used by
   the host test. Filter coefficients are calculated only during init.

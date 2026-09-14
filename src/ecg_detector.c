@@ -58,6 +58,8 @@ void ecg_detector_default_config(ecg_detector_config_t *config,
     config->max_sample_slew_uv = 2500.0f;
     config->adc_clip_uv = 5000.0f;
     config->vf_min_rms_uv = 120.0f;
+    config->p_wave_min_uv = 40.0f;
+    config->t_wave_min_uv = 75.0f;
 }
 
 static bool config_valid(const ecg_detector_config_t *config)
@@ -96,7 +98,7 @@ bool ecg_detector_init(ecg_detector_t *detector,
         detector->mwi_length = ECG_DETECTOR_MAX_MWI_SAMPLES;
 
     detector->vf_length = (uint16_t)(4u * config->sample_rate_hz);
-    detector->history_length = (uint16_t)((350u * config->sample_rate_hz) /
+    detector->history_length = (uint16_t)((1100u * config->sample_rate_hz) /
                                           1000u);
     if (detector->history_length < 64u) detector->history_length = 64u;
     if (detector->history_length > ECG_DETECTOR_MAX_HISTORY_SAMPLES)
@@ -230,6 +232,116 @@ static float history_at_age(const ecg_detector_t *d, uint16_t age)
     const uint16_t index = (uint16_t)((d->history_position + d->history_length -
                                       1u - age) % d->history_length);
     return d->filtered_history[index];
+}
+
+static uint64_t locate_r_peak_sample(const ecg_detector_t *d)
+{
+    uint16_t search = (uint16_t)((250u * d->config.sample_rate_hz) / 1000u);
+    uint16_t peak_age = 0u;
+    uint16_t age;
+    float peak = 0.0f;
+    if (d->history_count == 0u) return d->sample_index;
+    if (search >= d->history_count) search = (uint16_t)(d->history_count - 1u);
+    for (age = 0u; age <= search; ++age) {
+        const float magnitude = fabsf(history_at_age(d, age));
+        if (magnitude > peak) {
+            peak = magnitude;
+            peak_age = age;
+        }
+    }
+    return d->sample_index - peak_age;
+}
+
+static bool find_wave_peak(const ecg_detector_t *d, uint64_t start,
+                           uint64_t end, float minimum_uv,
+                           uint64_t *peak_sample, float *peak_uv)
+{
+    uint64_t sample;
+    float start_value, end_value;
+    float best_residual = 0.0f;
+    bool found = false;
+    if (start >= end || end > d->sample_index ||
+        d->sample_index - start >= d->history_count) return false;
+    start_value = history_at_age(d, (uint16_t)(d->sample_index - start));
+    end_value = history_at_age(d, (uint16_t)(d->sample_index - end));
+    for (sample = start + 1u; sample < end; ++sample) {
+        const float fraction = (float)(sample - start) / (float)(end - start);
+        const float baseline = start_value + fraction * (end_value - start_value);
+        const float value = history_at_age(d,
+                            (uint16_t)(d->sample_index - sample));
+        const float previous = history_at_age(d,
+                               (uint16_t)(d->sample_index - sample + 1u));
+        const float next = history_at_age(d,
+                           (uint16_t)(d->sample_index - sample - 1u));
+        const float residual = fabsf(value - baseline);
+        const bool local_extremum =
+            (value >= previous && value >= next) ||
+            (value <= previous && value <= next);
+        if (local_extremum && residual > best_residual) {
+            best_residual = residual;
+            *peak_sample = sample;
+            *peak_uv = value;
+            found = true;
+        }
+    }
+    return found && best_residual >= minimum_uv;
+}
+
+static uint64_t samples_before(uint64_t sample, uint32_t amount)
+{
+    return sample > amount ? sample - amount : 0u;
+}
+
+static uint32_t delineate_at_qrs(ecg_detector_t *d, uint64_t r_peak,
+                                 ecg_detector_output_t *output)
+{
+    const uint32_t fs = d->config.sample_rate_hz;
+    uint32_t events = 0u;
+    uint64_t start, end;
+
+    if (d->t_wave_pending) {
+        start = d->pending_t_r_sample + (120u * fs) / 1000u;
+        end = d->pending_t_r_sample + (500u * fs) / 1000u;
+        if (r_peak > (80u * fs) / 1000u &&
+            end > r_peak - (80u * fs) / 1000u)
+            end = r_peak - (80u * fs) / 1000u;
+        if (find_wave_peak(d, start, end, d->config.t_wave_min_uv,
+                           &output->t_peak_sample_index,
+                           &output->t_peak_uv))
+            events |= ECG_EVENT_T_WAVE;
+        d->t_wave_pending = false;
+    }
+
+    start = samples_before(r_peak, (280u * fs) / 1000u);
+    end = samples_before(r_peak, (60u * fs) / 1000u);
+    if (d->has_r_peak) {
+        const uint64_t after_previous = d->last_r_peak_sample +
+                                        (80u * fs) / 1000u;
+        if (start < after_previous) start = after_previous;
+    }
+    if (find_wave_peak(d, start, end, d->config.p_wave_min_uv,
+                       &output->p_peak_sample_index, &output->p_peak_uv))
+        events |= ECG_EVENT_P_WAVE;
+
+    d->last_r_peak_sample = r_peak;
+    d->has_r_peak = true;
+    d->pending_t_r_sample = r_peak;
+    d->t_wave_pending = true;
+    return events;
+}
+
+static uint32_t delineate_pending_t(ecg_detector_t *d,
+                                    ecg_detector_output_t *output)
+{
+    const uint32_t fs = d->config.sample_rate_hz;
+    const uint64_t end = d->pending_t_r_sample + (500u * fs) / 1000u;
+    const uint64_t start = d->pending_t_r_sample + (120u * fs) / 1000u;
+    if (!d->t_wave_pending || d->sample_index < end) return 0u;
+    d->t_wave_pending = false;
+    if (find_wave_peak(d, start, end, d->config.t_wave_min_uv,
+                       &output->t_peak_sample_index, &output->t_peak_uv))
+        return ECG_EVENT_T_WAVE;
+    return 0u;
 }
 
 static uint16_t estimate_qrs_width_ms(const ecg_detector_t *d)
@@ -563,7 +675,10 @@ void ecg_detector_process(ecg_detector_t *d, float sample_uv,
     bool qrs;
     uint32_t events;
     uint32_t beat_events = 0u;
+    uint32_t wave_events = 0u;
+    uint64_t qrs_peak_sample = 0u;
     if (d == NULL || output == NULL) return;
+    memset(output, 0, sizeof(*output));
 
     d->input_flags = input_flags;
     filtered = filter_sample(d, sample_uv);
@@ -574,14 +689,18 @@ void ecg_detector_process(ecg_detector_t *d, float sample_uv,
     update_quality(d, sample_uv, input_flags);
     qrs = detect_qrs(d, filtered);
     if (qrs) {
+        qrs_peak_sample = locate_r_peak_sample(d);
+        output->qrs_peak_sample_index = qrs_peak_sample;
+        wave_events |= delineate_at_qrs(d, qrs_peak_sample, output);
         beat_events = classify_beat(d);
         update_rhythm_after_qrs(d);
     }
+    wave_events |= delineate_pending_t(d, output);
     update_vf(d, filtered);
     d->sample_index++;
     events = active_events(d);
 
-    memset(output, 0, sizeof(*output));
+    output->qrs_peak_sample_index = qrs_peak_sample;
     output->sample_index = d->sample_index;
     output->filtered_uv = filtered;
     output->heart_rate_bpm = d->heart_rate_bpm;
@@ -591,9 +710,10 @@ void ecg_detector_process(ecg_detector_t *d, float sample_uv,
         ECG_DETECTOR_MAX_RR_INTERVALS] : 0u;
     output->beat_type = qrs ? d->last_beat_type : ECG_BEAT_NONE;
     output->signal_quality = d->signal_quality;
-    output->active_events = events | beat_events |
+    output->active_events = events | beat_events | wave_events |
                             (qrs ? ECG_EVENT_QRS : 0u);
-    output->new_events = (events & ~d->previous_active_events) | beat_events;
+    output->new_events = (events & ~d->previous_active_events) | beat_events |
+                         wave_events;
     if (qrs) output->new_events |= ECG_EVENT_QRS;
     output->rhythm = select_rhythm(d, events);
     output->input_flags = input_flags;

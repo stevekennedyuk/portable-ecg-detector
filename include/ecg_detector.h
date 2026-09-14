@@ -13,7 +13,7 @@ extern "C" {
 #define ECG_DETECTOR_MAX_RR_INTERVALS 32u
 #define ECG_DETECTOR_MAX_MWI_SAMPLES 200u
 #define ECG_DETECTOR_MAX_VF_SAMPLES (4u * ECG_DETECTOR_MAX_SAMPLE_RATE_HZ)
-#define ECG_DETECTOR_MAX_HISTORY_SAMPLES 400u
+#define ECG_DETECTOR_MAX_HISTORY_SAMPLES 1200u
 
 typedef enum {
     ECG_RHYTHM_WARMUP = 0,
@@ -53,7 +53,9 @@ enum {
     ECG_EVENT_PVC_CANDIDATE       = 1u << 11,
     ECG_EVENT_VENTRICULAR_COUPLET = 1u << 12,
     ECG_EVENT_BIGEMINY_CANDIDATE  = 1u << 13,
-    ECG_EVENT_TRIGEMINY_CANDIDATE = 1u << 14
+    ECG_EVENT_TRIGEMINY_CANDIDATE = 1u << 14,
+    ECG_EVENT_P_WAVE              = 1u << 15,
+    ECG_EVENT_T_WAVE              = 1u << 16
 };
 
 enum {
@@ -77,6 +79,8 @@ typedef struct {
     float max_sample_slew_uv;
     float adc_clip_uv;
     float vf_min_rms_uv;
+    float p_wave_min_uv;
+    float t_wave_min_uv;
 } ecg_detector_config_t;
 
 typedef struct {
@@ -85,6 +89,11 @@ typedef struct {
     float heart_rate_bpm;
     uint16_t last_rr_ms;
     uint16_t qrs_width_ms;
+    uint64_t qrs_peak_sample_index;
+    uint64_t p_peak_sample_index;
+    uint64_t t_peak_sample_index;
+    float p_peak_uv;
+    float t_peak_uv;
     ecg_beat_type_t beat_type;
     uint8_t signal_quality;            /* 0..100; not a clinical quality score. */
     ecg_rhythm_t rhythm;
@@ -148,6 +157,10 @@ typedef struct {
     uint16_t history_length;
     uint16_t history_position;
     uint16_t history_count;
+    uint64_t last_r_peak_sample;
+    uint64_t pending_t_r_sample;
+    bool has_r_peak;
+    bool t_wave_pending;
 
     float quality_min;
     float quality_max;

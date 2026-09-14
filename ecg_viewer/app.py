@@ -16,7 +16,10 @@ EVENT_COLOURS = {
     1 << 6: "#ef4444", 1 << 7: "#dc2626", 1 << 8: "#facc15",
     1 << 9: "#a78bfa", 1 << 10: "#2dd4bf", 1 << 11: "#c084fc",
     1 << 12: "#d946ef", 1 << 13: "#f472b6", 1 << 14: "#fb7185",
+    1 << 15: "#22c55e", 1 << 16: "#38bdf8",
 }
+
+LANDMARK_SYMBOLS = {1 << 0: "o", 1 << 15: "t1", 1 << 16: "d"}
 
 
 def run_viewer(record: EcgRecord, detections: list[list[DetectionEvent]]) -> int:
@@ -123,15 +126,32 @@ def run_viewer(record: EcgRecord, detections: list[list[DetectionEvent]]) -> int
                 plot.plot(times, signal, pen=pg.mkPen("#55d6be", width=1.2))
                 lead_events = [event for event in detections[lead]
                                if start <= event.sample < stop]
-                qrs = [event for event in lead_events if event.event_bit == 1]
-                if qrs:
-                    samples = np.asarray([event.sample for event in qrs], dtype=int)
-                    plot.addItem(pg.ScatterPlotItem(
-                        x=samples / record.sample_rate_hz,
-                        y=record.signals_uv[samples, lead], size=5,
-                        brush=pg.mkBrush(EVENT_COLOURS[1]), pen=None))
+                for landmark_bit, symbol in LANDMARK_SYMBOLS.items():
+                    landmarks = [event for event in lead_events
+                                 if event.event_bit == landmark_bit]
+                    if landmarks:
+                        samples = np.asarray([event.sample for event in landmarks],
+                                             dtype=int)
+                        plot.addItem(pg.ScatterPlotItem(
+                            x=samples / record.sample_rate_hz,
+                            y=record.signals_uv[samples, lead],
+                            size=5 if landmark_bit == 1 else 8,
+                            symbol=symbol,
+                            brush=pg.mkBrush(EVENT_COLOURS[landmark_bit]),
+                            pen=None))
+                        if landmark_bit != 1:
+                            label = "P" if landmark_bit == 1 << 15 else "T"
+                            for sample in samples:
+                                text = pg.TextItem(label,
+                                    color=EVENT_COLOURS[landmark_bit],
+                                    anchor=(0.5, 1.2))
+                                text.setPos(sample / record.sample_rate_hz,
+                                            record.signals_uv[sample, lead])
+                                plot.addItem(text)
                 for event in lead_events:
-                    if event.event_bit == 1:
+                    if event.event_bit in LANDMARK_SYMBOLS:
+                        if event.event_bit != 1:
+                            visible_names.add(event.name)
                         continue
                     visible_names.add(event.name)
                     line = pg.InfiniteLine(
