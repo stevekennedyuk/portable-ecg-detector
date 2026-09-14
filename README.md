@@ -66,6 +66,15 @@ Running without a path opens a native file chooser:
 python3 -m ecg_viewer
 ```
 
+The repository includes a small real AF recording for an immediate test:
+
+```sh
+python3 -m ecg_viewer samples/aftdb-n01/n01.hea --mains 60
+```
+
+See [`samples/README.md`](samples/README.md) for its source, license and
+additional official arrhythmia dataset links.
+
 The bridge automatically builds `build/libecg_detector.dylib` with Clang when
 the C source changes. Detection is performed independently for every displayed
 lead. That is helpful during development, but a production multi-lead monitor
