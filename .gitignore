@@ -3,3 +3,6 @@ test_ecg_detector_san
 *.dSYM/
 *.o
 build/
+.venv/
+__pycache__/
+*.py[cod]

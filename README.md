@@ -38,6 +38,40 @@ make test
 
 The test uses only the standard C library and `libm`.
 
+## macOS ECG viewer
+
+The Python viewer reads standard PhysioNet/WFDB (`.hea` plus signal files) and
+EDF/EDF+ recordings. It displays all leads in synchronized 5, 10, 20 or
+30-second windows and overlays the events produced by this C detector. QRS
+locations are shown as dots; arrhythmia onsets are labelled vertical markers.
+
+On macOS:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements-macos.txt
+python3 -m ecg_viewer /path/to/record.hea
+```
+
+For an EDF recording:
+
+```sh
+python3 -m ecg_viewer /path/to/record.edf --mains 50
+```
+
+Running without a path opens a native file chooser:
+
+```sh
+python3 -m ecg_viewer
+```
+
+The bridge automatically builds `build/libecg_detector.dylib` with Clang when
+the C source changes. Detection is performed independently for every displayed
+lead. That is helpful during development, but a production multi-lead monitor
+should add a lead-fusion policy so one physiological event does not become 12
+independent alarms.
+
 ## Minimal integration
 
 ```c
